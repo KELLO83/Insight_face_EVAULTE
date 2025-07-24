@@ -1,9 +1,5 @@
 #!/bin/bash
 
-# InsightFace Docker 실행 스크립트
-# 반드시 프로젝트 디렉토리에서 실행해야 함
-
-# 현재 디렉토리를 프로젝트 디렉토리로 사용
 PROJECT_DIR="$(pwd)"
 
 echo "🚀 InsightFace Docker 컨테이너 실행"

@@ -18,12 +18,10 @@ try:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     script_dir = os.getcwd()
-LOG_FILE = os.path.join(script_dir, "LOG.txt")
 
-logging.basicConfig(
-    filename=LOG_FILE, level=logging.WARNING,
-    format='%(asctime)s - %(levelname)s - %(message)s', filemode='w'
-)
+def get_log_file(model_name):
+    """모델명에 따른 로그 파일 경로 반환"""
+    return os.path.join(script_dir, f"{model_name}_LOG.txt")
 
 model_info = {
         "antelopev2": "ResNet-100 + Glint360K (407MB)",
@@ -140,6 +138,13 @@ def plot_roc_curve(fpr, tpr, roc_auc, model_name, excel_path):
     print(f"ROC 커브 그래프가 '{plot_filename}' 파일로 저장되었습니다.")
 
 def main(args):
+    # 모델명에 따른 로그 파일 설정
+    LOG_FILE = get_log_file(args.model_name)
+    logging.basicConfig(
+        filename=LOG_FILE, level=logging.WARNING,
+        format='%(asctime)s - %(levelname)s - %(message)s', filemode='w'
+    )
+    
     if not os.path.isdir(args.data_path):
         raise FileNotFoundError(f"데이터셋 경로를 찾을 수 없습니다: {args.data_path}")
 
@@ -273,6 +278,7 @@ if __name__ == "__main__":
     try:
         main(args)
     except Exception as e:
+        LOG_FILE = get_log_file(args.model_name)
         error_message = traceback.format_exc()
         logging.error(f"스크립트 실행 중 처리되지 않은 예외 발생:\n{error_message}")
         print(f"\n치명적인 오류가 발생했습니다. '{LOG_FILE}' 파일에 상세 내역이 기록되었습니다.")

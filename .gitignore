@@ -9,12 +9,9 @@ __pycache__/
 *.pyc
 *.pkl
 *.xlsx
-/models
 
-
-
-
-
+!models/
+!models/**/*
 
 # === 이미지 파일 ===
 *.jpg

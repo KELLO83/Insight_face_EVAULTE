@@ -1,8 +1,8 @@
 #!/bin/bash
 
-echo "🚀 InsightFace GPU 도커 이미지 빌드 시작..."
+echo "🚀 도커 이미지 빌드 시작..."
 echo "================================================"
-echo "📋 빌드 환경 (로컬 .venv와 동일):"
+echo "📋 빌드 환경 :"
 echo "   - Base Image: pytorch/pytorch:2.7.1-cuda12.6-cudnn9-devel"
 echo "   - Python: 3.10.12"
 echo "   - PyTorch: 2.7.1+cu126"
@@ -12,7 +12,6 @@ echo "   - ONNX Runtime GPU: 1.22.0"
 echo "   - InsightFace: 0.7.3"
 echo ""
 
-# 도커 이미지 빌드
 docker build -t insightface-gpu:cuda12.6-py310 .
 
 if [ $? -eq 0 ]; then
@@ -34,14 +33,27 @@ if [ $? -eq 0 ]; then
     echo "🔄 이미지 정보:"
     docker images insightface-gpu:cuda12.6-py310
     echo ""
-    echo "🧪 환경 검증 명령어:"
-    echo "docker run --gpus all --rm insightface-gpu:cuda12.6-py310 python -c \\"
-    echo "  import torch, onnxruntime as ort; \\"
-    echo "  print(f'PyTorch: {torch.__version__}'); \\"
-    echo "  print(f'CUDA available: {torch.cuda.is_available()}'); \\"
-    echo "  print(f'CUDA version: {torch.version.cuda}'); \\"
-    echo "  print(f'ONNX Runtime providers: {ort.get_available_providers()}'); \\"
-    echo "  print(f'GPU count: {torch.cuda.device_count()}')\\"
+    echo "🧪 환경 검증 중..."
+    echo "================================================"
+    
+    # 자동 환경 검증 실행
+    docker run --gpus all --rm insightface-gpu:cuda12.6-py310 python -c "
+import torch
+import onnxruntime as ort
+print('✅ 환경 검증 결과:')
+print(f'   - PyTorch: {torch.__version__}')
+print(f'   - CUDA available: {torch.cuda.is_available()}')
+print(f'   - CUDA version: {torch.version.cuda}')
+print(f'   - GPU count: {torch.cuda.device_count()}')
+print(f'   - ONNX Runtime providers: {ort.get_available_providers()[:2]}')
+print('🎉 Docker 환경 준비 완료!')
+"
+    
+    echo ""
+    echo "📋 실행 방법:"
+    echo "   ./run_docker.sh buffalo_l    # Buffalo-L 모델"
+    echo "   ./run_docker.sh antelopev2   # Antelope v2 모델"
+    echo "   ./run_docker.sh buffalo_s    # Buffalo-S 모델 (경량)"
 else
     echo "❌ 도커 이미지 빌드 실패!"
     echo ""
