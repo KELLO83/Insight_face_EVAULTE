@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# 임시 파일
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 도커 관련
+Dockerfile
+.dockerignore
+build_docker.sh
+
+# 큰 파일들 (선택적으로 제외)
+# models/
+# *.onnx
+
+# 결과 파일
+results/
+*.jpg
+*.png
+*.jpeg
