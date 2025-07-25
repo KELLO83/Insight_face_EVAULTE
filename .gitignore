@@ -8,7 +8,6 @@ split_pari
 __pycache__/
 *.pyc
 *.pkl
-*.xlsx
 
 !models/
 !models/**/*
@@ -16,7 +15,6 @@ __pycache__/
 # === 이미지 파일 ===
 *.jpg
 *.jpeg
-*.png
 *.gif
 *.bmp
 *.tiff
@@ -85,11 +83,8 @@ env/
 Thumbs.db
 
 # === 결과 파일 ===
-*.xlsx
-*.csv
 LOG.txt
 output.log
-*.png
 embeddings_cache_*
 
 # === AI 모델 파일 ===
