@@ -8,7 +8,8 @@ split_pari
 __pycache__/
 *.pyc
 *.pkl
-
+*.txt
+*.xlsx
 !models/
 !models/**/*
 

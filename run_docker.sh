@@ -38,9 +38,5 @@ sudo docker run --gpus all --rm \
   insightface-gpu:latest \
   bash -c "cd /app/workspace && python single_insightface.py --model_name $MODEL_NAME --data_path $DATA_PATH" 2>&1 | tee output.log
 
+ehco "✅ 실행 완료. 로그: output.log"
 
-if [ -f "insightface_evaluation_results.xlsx" ]; then
-    sudo chown $USER:$USER ./*.xlsx ./*.txt ./*.png 2>/dev/null || true
-fi
-
-echo "✅ 실행 완료. 로그: output.log"
