@@ -18,7 +18,7 @@ class FaceAligner:
         self.fa = face_alignment.FaceAlignment(
             face_alignment.LandmarksType.TWO_D, 
             flip_input=False,
-            device='cuda:1' if torch.cuda.is_available() else 'cpu',
+            device='cuda:0' if torch.cuda.is_available() else 'cpu',
             face_detector='sfd'
         )
 
@@ -97,7 +97,7 @@ class FaceAligner:
 
 def test_face_alignment():
 
-    target_dir = 'pair'
+    target_dir = 'lfw_sorting'
     save_dir = os.path.join(f'{target_dir}', 'aligned_faces')
     os.makedirs(save_dir, exist_ok=True)
 

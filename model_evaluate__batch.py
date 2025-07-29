@@ -3,7 +3,9 @@ import itertools
 import random
 import numpy as np
 import pandas as pd
-from insightface.app import FaceAnalysis
+from backbone.ir_ASIS_Resnet import Backbone
+from backbone.irsnet import IResNet , IBasicBlock
+import torch
 import cv2
 from tqdm import tqdm
 from sklearn.metrics import roc_curve, auc, confusion_matrix
@@ -12,106 +14,81 @@ import traceback
 import pickle
 import argparse
 import matplotlib.pyplot as plt
+import logging
+from torchvision import transforms as V2
+from PIL import Image
 
-# --- 로깅 및 경로 설정 ---
 try:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 except NameError:
     script_dir = os.getcwd()
 
-def get_log_file(model_name):
-    """모델명에 따른 로그 파일 경로 반환"""
-    return os.path.join(script_dir, f"{model_name}_LOG.txt")
 
-model_info = {
-        "antelopev2": "ResNet-100 + Glint360K (407MB)",
-        "buffalo_l": "ResNet-50 + WebFace600K (326MB)", 
-        "buffalo_m": "ResNet-50 + WebFace600K (313MB)",
-        "buffalo_s": "MobileFaceNet + WebFace600K (159MB)",
-        "buffalo_sc": "MobileFaceNet + WebFace600K (16MB)",
-    }
 
-def get_all_embeddings_insightface(identity_map, face_app, model_name, dataset_name, use_cache=True):
-    """InsightFace를 사용한 임베딩 추출 (normed_embedding 사용)"""
-    cache_file = os.path.join(script_dir, f"embeddings_cache_{dataset_name}_{model_name}_insightface.pkl")
-    print(f"\n캐시 파일: {cache_file}")
-    
-    def normalize_path(path):
-        if 'pair/' in path:
-            return path.split('pair/')[-1]
-        return path
-    
-    if use_cache and os.path.exists(cache_file):
-        print(f"\n캐시 파일 '{cache_file}'에서 임베딩을 로드합니다...")
-        with open(cache_file, 'rb') as f:
-            cached_embeddings = pickle.load(f)
-        
- 
-        embeddings = {}
-        path_mapping = {}  
-        for cached_path, embedding in cached_embeddings.items():
-            normalized_cached = normalize_path(cached_path)
-            path_mapping[normalized_cached] = cached_path
-            
-        all_current_images = sorted(list(set(itertools.chain.from_iterable(identity_map.values()))))
-        
-        for current_path in all_current_images:
-            normalized_current = normalize_path(current_path)
-            if normalized_current in path_mapping:
-                original_cached_path = path_mapping[normalized_current]
-                embeddings[current_path] = cached_embeddings[original_cached_path]
-            else:
-                embeddings[current_path] = None
-                
-        print(f"경로 매칭 완료: {len([v for v in embeddings.values() if v is not None])}개 성공")
-        print("임베딩 로드 완료.")
-        return embeddings
+transforms = V2.Compose([
+        V2.ToTensor(),
+        V2.CenterCrop(size=(112, 112)),
+        V2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+    ])
 
-    all_images = sorted(list(set(itertools.chain.from_iterable(identity_map.values()))))
-    print(f"\n총 {len(all_images)}개의 이미지에 대해 임베딩을 새로 추출합니다...")
-    
+
+@torch.inference_mode()
+def gel_all_embeddings(identity_map, backbone, dataset_name, data_path):
+    backbone = backbone.to('cuda:0')
     embeddings = {}
-    
-    for img_path in tqdm(all_images, desc="임베딩 추출"):
-        try:
-            image = cv2.imread(img_path)
-            if image is None:
-                logging.warning(f"이미지 로드 실패: {img_path}")
-                embeddings[img_path] = None
-                continue
-            
-            image_rgb = image[:, :, ::-1]
-            faces = face_app.get(image_rgb)
-            
-            if len(faces) == 0:
-                logging.warning(f"얼굴을 찾을 수 없음: {img_path}")
-                embeddings[img_path] = None
-            else:
-                embeddings[img_path] = faces[0].normed_embedding
+    all_images = sorted(list(set(itertools.chain.from_iterable(identity_map.values()))))
+    backbone.eval()
+    batch_size = 256
+
+    def preprocess_image(image):
+        image = Image.fromarray(image)
+        transformed_image = transforms(image)
+        return transformed_image
+
+    for i in tqdm(range(0, len(all_images), batch_size), desc='임베딩 추출 (배치)'):
+        batch_paths = all_images[i:i + batch_size]
+        batch_images = []
+        valid_paths = []
+
+        for img_path in batch_paths:
+            try:
+                image = cv2.imread(img_path)
+                if image is None:
+                    embeddings[img_path] = None
+                    logging.warning(f"{img_path} 경로 이미지가 비었습니다")
+                    continue
                 
-        except Exception as e:
-            logging.warning(f"임베딩 추출 오류: {img_path}. 제외됩니다. 오류: {e}")
-            embeddings[img_path] = None
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                processed_image = preprocess_image(image_rgb)
+                batch_images.append(processed_image)
+                valid_paths.append(img_path)
+            except Exception as e:
+                logging.warning(f"이미지 처리 실패 경로 : {img_path} 오류 : {e}")
+                embeddings[img_path] = None
 
-    if use_cache:
-        print(f"\n추출된 임베딩을 캐시 파일 '{cache_file}'에 저장합니다...")
-        with open(cache_file, 'wb') as f:
-            pickle.dump(embeddings, f)
-        print("캐시 저장 완료.")
-    return embeddings
+        if not batch_images:
+            continue
 
-def collect_scores_from_embeddings(pairs, embeddings, is_positive):
-    """임베딩으로 유사도를 계산합니다 (np.dot 사용)."""
-    similarities, labels = [], []
-    label = 1 if is_positive else 0
-    desc = "동일 인물 쌍 계산" if is_positive else "다른 인물 쌍 계산"
-    for img1_path, img2_path in tqdm(pairs, desc=desc):
-        emb1, emb2 = embeddings.get(img1_path), embeddings.get(img2_path)
-        if emb1 is not None and emb2 is not None:
-            similarities.append(np.dot(emb1, emb2))
-            labels.append(label)
+        batch_tensor = torch.stack(batch_images).to('cuda:0')
+        
+        try:
+            vectors = backbone(batch_tensor)
             
-    return similarities, labels
+            if vectors is None or vectors.numel() == 0:
+                logging.warning(f"배치에서 벡터 추출 실패: {valid_paths}")
+                for img_path in valid_paths:
+                    embeddings[img_path] = None
+            else:
+                for j, img_path in enumerate(valid_paths):
+                    embeddings[img_path] = vectors[j].cpu().numpy().flatten()
+
+        except Exception as e:
+            logging.warning(f"배치 임베딩 추출 실패: {valid_paths} 오류 : {e}")
+            for img_path in valid_paths:
+                embeddings[img_path] = None
+
+    return embeddings
+    
 
 def save_results_to_excel(excel_path, model_name, roc_auc, eer, tar_at_far_results, target_fars, metrics, total_dataset_img_len, total_class,
                            data_path, model_attr_value):
@@ -147,7 +124,6 @@ def save_results_to_excel(excel_path, model_name, roc_auc, eer, tar_at_far_resul
 def plot_roc_curve(fpr, tpr, roc_auc, model_name, excel_path):
     """ROC 커브를 그리고 파일로 저장합니다."""
 
-    modeL_value = model_info.get(model_name, "정보 없음")
     plt.figure(figsize=(8, 6))
     plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.4f})')
     plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
@@ -155,16 +131,33 @@ def plot_roc_curve(fpr, tpr, roc_auc, model_name, excel_path):
     plt.ylim([0.0, 1.05])
     plt.xlabel('False Positive Rate (FAR)')
     plt.ylabel('True Positive Rate (TAR)')
-    plt.title(f'ROC Curve {model_name} {modeL_value}')
+    plt.title(f'ROC Curve {model_name}')
     plt.legend(loc="lower right")
     plt.grid(True)
     plot_filename = os.path.splitext(excel_path)[0] + f"_{model_name}_roc_curve.png"
     plt.savefig(plot_filename)
     print(f"ROC 커브 그래프가 '{plot_filename}' 파일로 저장되었습니다.")
 
+
+def collect_scores_from_embeddings(pairs, embeddings, is_positive):
+    """임베딩으로 유사도를 계산합니다 (코사인 유사도 사용)."""
+    similarities, labels = [], []
+    label = 1 if is_positive else 0
+    desc = "동일 인물 쌍 계산" if is_positive else "다른 인물 쌍 계산"
+    for img1_path, img2_path in tqdm(pairs, desc=desc):
+        emb1, emb2 = embeddings.get(img1_path), embeddings.get(img2_path)
+        if emb1 is not None and emb2 is not None:
+            # 코사인 유사도 계산 (정규화된 임베딩의 내적)
+            emb1_norm = emb1 / np.linalg.norm(emb1)
+            emb2_norm = emb2 / np.linalg.norm(emb2)
+            cosine_similarity = np.dot(emb1_norm, emb2_norm)
+            similarities.append(cosine_similarity)
+            labels.append(label)
+            
+    return similarities, labels
+
 def main(args):
-    # 모델명에 따른 로그 파일 설정
-    LOG_FILE = get_log_file(args.model_name)
+    LOG_FILE = os.path.join(script_dir , f'{args.model}_LOG.log')
     logging.basicConfig(
         filename=LOG_FILE, level=logging.WARNING,
         format='%(asctime)s - %(levelname)s - %(message)s', filemode='w'
@@ -207,27 +200,44 @@ def main(args):
     negative_pairs = list(negative_pairs_set)
 
     print(f"- 동일 인물 쌍: {len(positive_pairs)}개, 다른 인물 쌍: {len(negative_pairs)}개")
-    print(f"\{args.model_name} 모델을 로드합니다...")
 
-    provider_options = [
-        {},  # CUDAExecutionProvider에 대한 옵션
-        {'intra_op_num_threads': 0}  # CPUExecutionProvider에 대한 옵션
-    ]
-        
-    face_app = FaceAnalysis(
-        name=args.model_name,
-        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-        root=".",
-        provider_options=provider_options
-    )
+    if args.model =='ms1m-resnet100':
+        Weight_path = 'models/ms1mv3_arcface_r100_fp16.pth'
+        backbone = IResNet(IBasicBlock , [3,13,30,3])
 
-    face_app.prepare(ctx_id=0, det_size=tuple(args.det_size))
-    print("모델이 성공적으로 로드되었습니다.")
+    elif args.model =='irsnet50':
+        Weight_path = 'models/backbone_ir50_asia.pth'
+        print("IR50 모델을 사용합니다.")
+        backbone = Backbone(
+            input_size=(112,112,3),
+            num_layers=50,
+        )
+    elif args.model =='ir50_batch':
+        Weight_path = 'models/backbone_ir50_asia.pth'
+        print("IR50 모델을 사용합니다.")
+        backbone = Backbone(
+            input_size=(112,112,3),
+            num_layers=50,
+        )
+
+    elif args.model =='best11' or args.model =='best_no_resize':
+        Weight_path = '/home/ubuntu/arcface-pytorch/checkpoints/best/irsnet50/irsnet50_best.pth'
+        backbone = Backbone(
+            input_size=(112,112,3),
+            num_layers=50
+        )
+
+    load_result = backbone.load_state_dict(torch.load(Weight_path, map_location='cpu'), strict=False)
+    print("누락된 가중치 : {}".format(load_result.missing_keys))
+    print("예상치못한 가중치 : {}".format(load_result.unexpected_keys))
+
+    if not load_result.missing_keys and not load_result.unexpected_keys:
+        print("모델 가중치가 성공적으로 로드되었습니다.")
 
     dataset_name = os.path.basename(os.path.normpath(args.data_path))
-    embeddings = get_all_embeddings_insightface(
-        identity_map, face_app, args.model_name, dataset_name, 
-        use_cache=args.cache
+
+    embeddings = gel_all_embeddings(
+        identity_map, backbone, dataset_name, args.data_path,
     )
 
     pos_similarities, pos_labels = collect_scores_from_embeddings(positive_pairs, embeddings, is_positive=True)
@@ -267,14 +277,14 @@ def main(args):
         f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
         metrics = {"accuracy": accuracy, "recall": recall, "f1_score": f1_score, "tp": tp, "tn": tn, "fp": fp, "fn": fn}
 
-        print(f"사용된 모델: InsightFace {args.model_name}, 전체 평가 쌍: {len(labels)} 개")
+        print(f"전체 평가 쌍: {len(labels)} 개")
         print(f"[주요 성능] ROC-AUC: {roc_auc:.4f}, EER: {eer:.4f} (유사도 임계값: {eer_threshold:.4f})")
         print(f"[상세 지표] Accuracy: {metrics['accuracy']:.4f}, Recall: {metrics['recall']:.4f}, F1-Score: {metrics['f1_score']:.4f}")
         for far, tar in tar_at_far_results.items():
             print(f"  - TAR @ FAR {far*100:g}%: {tar:.4f}")
         
         with open(LOG_FILE, 'a') as log_file:
-            log_file.write(f"\nInsightFace {args.model_name} 평가 결과:\n")
+            log_file.write(f"평가 결과:\n")
             log_file.write(f"ROC-AUC: {roc_auc:.4f}, EER: {eer:.4f} (Threshold: {eer_threshold:.4f})\n")
             log_file.write(f"Accuracy: {metrics['accuracy']:.4f}, Recall: {metrics['recall']:.4f}, F1-Score: {metrics['f1_score']:.4f}\n")
             for far, tar in tar_at_far_results.items():
@@ -283,13 +293,10 @@ def main(args):
         excel_path = os.path.join(script_dir, args.excel_path)
         total_dataset_img_len = sum(len(v) for v in identity_map.values())
         total_class = len(identity_map)
-        model_attr_value = model_info.get(args.model_name, "정보 없음")
-        save_results_to_excel(excel_path, f"InsightFace_{args.model_name}", roc_auc, eer, tar_at_far_results, \
-                              args.target_fars, metrics, total_dataset_img_len, total_class, args.data_path, model_attr_value)
-        
-        
-        if args.plot_roc:
-            plot_roc_curve(fpr, tpr, roc_auc, args.model_name, excel_path)
+        save_results_to_excel(excel_path, args.model, roc_auc, eer, tar_at_far_results, \
+                              args.target_fars, metrics, total_dataset_img_len, total_class, args.data_path, args.model)
+
+        plot_roc_curve(fpr, tpr, roc_auc, args.model, excel_path)
     else:
         msg = "평가를 위한 유효한 점수를 수집하지 못했습니다."
         print(msg)
@@ -297,21 +304,13 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Single-Process InsightFace Evaluation Script")
+    parser.add_argument('--model',type=str,choices=['ms1m-resnet100','irsnet50','best','best_no_resize','adaface','ir50_batch'] , default='best')
     parser.add_argument("--data_path", type=str, default="/home/ubuntu/arcface-pytorch/insight_face_package_model/pair/aligned_faces", help="평가할 데이터셋의 루트 폴더")
-    parser.add_argument("--model_name", type=str, default="antelopev2", 
-                       choices=["antelopev2", "buffalo_l", "buffalo_m", "buffalo_s", "buffalo_sc","auraface"],
-                       help="사용할 InsightFace 모델")
     parser.add_argument("--excel_path", type=str, default="insightface_evaluation_results.xlsx", help="결과를 저장할 Excel 파일 이름")
     parser.add_argument("--target_fars", nargs='+', type=float, default=[0.01, 0.001, 0.0001], help="TAR을 계산할 FAR 목표값들")
-    parser.add_argument("--det_size", nargs=2, type=int, default=[640, 640], help="얼굴 검출 크기 (width, height)")
-    parser.add_argument("--cache", action="store_true", help="이 플래그를 사용하면 기존 임베딩 캐시 파일을 로드하여 빠르게 실행합니다.", default=False) 
-    parser.add_argument("--plot-roc", action="store_true", help="이 플래그를 사용하면 ROC 커브 그래프를 파일로 저장합니다.", default=True)
     args = parser.parse_args()
 
     try:
         main(args)
     except Exception as e:
-        LOG_FILE = get_log_file(args.model_name)
         error_message = traceback.format_exc()
-        logging.error(f"스크립트 실행 중 처리되지 않은 예외 발생:\n{error_message}")
-        print(f"\n치명적인 오류가 발생했습니다. '{LOG_FILE}' 파일에 상세 내역이 기록되었습니다.")

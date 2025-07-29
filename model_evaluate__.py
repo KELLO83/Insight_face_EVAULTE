@@ -38,6 +38,7 @@ def gel_all_embeddings(identity_map, backbone, dataset_name, data_path):
     embeddings = {}
     all_images = sorted(list(set(itertools.chain.from_iterable(identity_map.values()))))
     backbone.eval()
+    batch_size = 256
     
 
     def preprocess_image(image):
@@ -48,6 +49,11 @@ def gel_all_embeddings(identity_map, backbone, dataset_name, data_path):
     for img_path in tqdm(all_images, desc='임베딩 추출'):
         try:
             image = cv2.imread(img_path)
+            # if image.shape[0] >112 or image.shape[1] > 112:
+            #     image = cv2.resize(image , interpolation=cv2.INTER_CUBIC)
+            # elif image.shape[0] < 112 or image.shape[1] < 112:
+            #     image = cv2.resize(image , interpolation=cv2.INTER_AREA)
+            
             if image is None:
                 embeddings[img_path] = None
                 logging.warning(f"{img_path} 경로 이미지가 비었습니다")
@@ -195,7 +201,13 @@ def main(args):
             input_size=(112,112,3),
             num_layers=50,
         )
-    print("모델이 성공적으로 로드되었습니다.")
+
+    elif args.model =='best' or args.model =='best_no_resize':
+        Weight_path = '/home/ubuntu/arcface-pytorch/checkpoints/best/irsnet50/irsnet50_best.pth'
+        backbone = Backbone(
+            input_size=(112,112,3),
+            num_layers=50
+        )
 
     load_result = backbone.load_state_dict(torch.load(Weight_path, map_location='cpu'), strict=False)
     print("누락된 가중치 : {}".format(load_result.missing_keys))
@@ -263,12 +275,10 @@ def main(args):
         excel_path = os.path.join(script_dir, args.excel_path)
         total_dataset_img_len = sum(len(v) for v in identity_map.values())
         total_class = len(identity_map)
-        save_results_to_excel(excel_path, f"Asis resnet50", roc_auc, eer, tar_at_far_results, \
-                              args.target_fars, metrics, total_dataset_img_len, total_class, args.data_path, "ResNet-50 (Asia Fine-tuned)")
-        
-        
+        save_results_to_excel(excel_path, args.model, roc_auc, eer, tar_at_far_results, \
+                              args.target_fars, metrics, total_dataset_img_len, total_class, args.data_path, args.model)
 
-        plot_roc_curve(fpr, tpr, roc_auc, 'resnet', excel_path)
+        plot_roc_curve(fpr, tpr, roc_auc, args.model, excel_path)
     else:
         msg = "평가를 위한 유효한 점수를 수집하지 못했습니다."
         print(msg)
@@ -276,8 +286,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Single-Process InsightFace Evaluation Script")
-    parser.add_argument('--model',type=str,choices=['ms1m-resnet100','irsnet50'] , default='irsnet50')
-    parser.add_argument("--data_path", type=str, default="/home/ubuntu/arcface-pytorch/insight_face_package_model/pair", help="평가할 데이터셋의 루트 폴더")
+    parser.add_argument('--model',type=str,choices=['ms1m-resnet100','irsnet50','best','best_no_resize','adaface'] , default='best')
+    parser.add_argument("--data_path", type=str, default="/home/ubuntu/arcface-pytorch/insight_face_package_model/pair/aligned_faces", help="평가할 데이터셋의 루트 폴더")
     parser.add_argument("--excel_path", type=str, default="insightface_evaluation_results.xlsx", help="결과를 저장할 Excel 파일 이름")
     parser.add_argument("--target_fars", nargs='+', type=float, default=[0.01, 0.001, 0.0001], help="TAR을 계산할 FAR 목표값들")
     args = parser.parse_args()

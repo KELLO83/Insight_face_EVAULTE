@@ -23,6 +23,7 @@ __pycache__/
 *.webp
 *.ico
 *.svg
+*.ckpt
 
 # === 데이터셋 디렉토리 ===
 celebA/

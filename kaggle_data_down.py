@@ -13,5 +13,11 @@ import torchvision
 #     transforms.Normalize([0.5]*3, [0.5]*3)
 # ])
 
-data = torchvision.datasets.CelebA(split='test', download=True , target_type='idenetity',root='data/celebA', transform=None)
+# data = torchvision.datasets.CelebA(split='test', download=True , target_type='idenetity',root='data/celebA', transform=None)
 
+import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("debarghamitraroy/casia-webface")
+
+print("Path to dataset files:", path)
