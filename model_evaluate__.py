@@ -286,7 +286,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Single-Process InsightFace Evaluation Script")
-    parser.add_argument('--model',type=str,choices=['ms1m-resnet100','irsnet50','best','best_no_resize','adaface'] , default='best')
+    parser.add_argument('--model',type=str,choices=['ms1m-resnet100','irsnet50','best','best_no_resize','adaface'] , default='irsnet50')
     parser.add_argument("--data_path", type=str, default="/home/ubuntu/arcface-pytorch/insight_face_package_model/pair/aligned_faces", help="평가할 데이터셋의 루트 폴더")
     parser.add_argument("--excel_path", type=str, default="insightface_evaluation_results.xlsx", help="결과를 저장할 Excel 파일 이름")
     parser.add_argument("--target_fars", nargs='+', type=float, default=[0.01, 0.001, 0.0001], help="TAR을 계산할 FAR 목표값들")
