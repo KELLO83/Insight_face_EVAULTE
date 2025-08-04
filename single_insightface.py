@@ -233,13 +233,25 @@ def main(args):
     pos_similarities, pos_labels = collect_scores_from_embeddings(positive_pairs, embeddings, is_positive=True)
     neg_similarities, neg_labels = collect_scores_from_embeddings(negative_pairs, embeddings, is_positive=False)
 
-
-    print(f"🔍 디버깅 정보:")
     print(f"   - 전체 임베딩 수: {len(embeddings)}")
     print(f"   - 유효한 임베딩 수: {sum(1 for v in embeddings.values() if v is not None)}")
     print(f"   - None 임베딩 수: {sum(1 for v in embeddings.values() if v is None)}")
     print(f"   - 양성 쌍 유사도 수: {len(pos_similarities)}")
     print(f"   - 음성 쌍 유사도 수: {len(neg_similarities)}")
+    print(f"\n--- 유사도 분포 분석 ---")
+
+    if pos_similarities and neg_similarities:
+        print(f"🔵 동일 인물 쌍 유사도:")
+        print(f"   - 최소값: {min(pos_similarities):.4f}")
+        print(f"   - 최대값: {max(pos_similarities):.4f}")
+        print(f"   - 평균값: {np.mean(pos_similarities):.4f}")
+        print(f"   - 표준편차: {np.std(pos_similarities):.4f}")
+        
+        print(f"🔴 다른 인물 쌍 유사도:")
+        print(f"   - 최소값: {min(neg_similarities):.4f}")
+        print(f"   - 최대값: {max(neg_similarities):.4f}")
+        print(f"   - 평균값: {np.mean(neg_similarities):.4f}")
+        print(f"   - 표준편차: {np.std(neg_similarities):.4f}")
     
     scores = np.array(pos_similarities + neg_similarities)
     labels = np.array(pos_labels + neg_labels)
@@ -297,8 +309,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Single-Process InsightFace Evaluation Script")
-    parser.add_argument("--data_path", type=str, default="/home/ubuntu/arcface-pytorch/insight_face_package_model/pair/aligned_faces", help="평가할 데이터셋의 루트 폴더")
-    parser.add_argument("--model_name", type=str, default="antelopev2", 
+    parser.add_argument("--data_path", type=str, default="lfw_sorting", help="평가할 데이터셋의 루트 폴더")
+    parser.add_argument("--model_name", type=str, default="buffalo_l", 
                        choices=["antelopev2", "buffalo_l", "buffalo_m", "buffalo_s", "buffalo_sc","auraface"],
                        help="사용할 InsightFace 모델")
     parser.add_argument("--excel_path", type=str, default="insightface_evaluation_results.xlsx", help="결과를 저장할 Excel 파일 이름")

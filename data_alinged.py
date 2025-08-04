@@ -97,8 +97,8 @@ class FaceAligner:
 
 def test_face_alignment():
 
-    target_dir = 'lfw_sorting'
-    save_dir = os.path.join(f'{target_dir}', 'aligned_faces')
+    target_dir = '/home/ubuntu/arcface-pytorch/insight_face_package_model/split_pair'
+    save_dir = '/home/ubuntu/arcface-pytorch/insight_face_package_model/split_pair/aligned'
     os.makedirs(save_dir, exist_ok=True)
 
     image_folder = os.path.join(f'{target_dir}','**',  '*.jpg')

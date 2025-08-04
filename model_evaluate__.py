@@ -33,13 +33,11 @@ transforms = V2.Compose([
 
 
 @torch.inference_mode()
-def gel_all_embeddings(identity_map, backbone, dataset_name, data_path):
-    backbone = backbone.to('cuda:1')
+def gel_all_embeddings(identity_map, backbone, dataset_name, data_path, device):
+    backbone = backbone.to(device)
     embeddings = {}
     all_images = sorted(list(set(itertools.chain.from_iterable(identity_map.values()))))
     backbone.eval()
-    batch_size = 256
-    
 
     def preprocess_image(image):
         image = Image.fromarray(image)
@@ -49,10 +47,10 @@ def gel_all_embeddings(identity_map, backbone, dataset_name, data_path):
     for img_path in tqdm(all_images, desc='임베딩 추출'):
         try:
             image = cv2.imread(img_path)
-            # if image.shape[0] >112 or image.shape[1] > 112:
-            #     image = cv2.resize(image , interpolation=cv2.INTER_CUBIC)
-            # elif image.shape[0] < 112 or image.shape[1] < 112:
-            #     image = cv2.resize(image , interpolation=cv2.INTER_AREA)
+            if image.shape[0] >112 or image.shape[1] > 112:
+                image = cv2.resize(image , interpolation=cv2.INTER_CUBIC)
+            elif image.shape[0] < 112 or image.shape[1] < 112:
+                image = cv2.resize(image , interpolation=cv2.INTER_AREA)
             
             if image is None:
                 embeddings[img_path] = None
@@ -62,7 +60,7 @@ def gel_all_embeddings(identity_map, backbone, dataset_name, data_path):
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             processed_image = preprocess_image(image_rgb)
             
-            processed_image = processed_image.unsqueeze(0).to('cuda:1')
+            processed_image = processed_image.unsqueeze(0).to(device)
             
             vector = backbone(processed_image)
             
@@ -142,9 +140,8 @@ def collect_scores_from_embeddings(pairs, embeddings, is_positive):
             cosine_similarity = np.dot(emb1_norm, emb2_norm)
             similarities.append(cosine_similarity)
             labels.append(label)
-            
+    
     return similarities, labels
-
 def main(args):
     LOG_FILE = os.path.join(script_dir , f'{args.model}_LOG.log')
     logging.basicConfig(
@@ -196,14 +193,16 @@ def main(args):
 
     elif args.model =='irsnet50':
         Weight_path = 'models/backbone_ir50_asia.pth'
-        print("IR50 모델을 사용합니다.")
+        logging.info("사전훈련 가중치 사용.. resnet50")
         backbone = Backbone(
             input_size=(112,112,3),
             num_layers=50,
         )
 
-    elif args.model =='best' or args.model =='best_no_resize':
-        Weight_path = '/home/ubuntu/arcface-pytorch/checkpoints/best/irsnet50/irsnet50_best.pth'
+    elif args.model =='best':
+        Weight_path = 'models/irsnet50_best.pth'
+        if not os.path.exists(Weight_path):
+            raise FileNotFoundError(f"가중치 파일을 찾을 수 없습니다: {Weight_path}")
         backbone = Backbone(
             input_size=(112,112,3),
             num_layers=50
@@ -219,7 +218,7 @@ def main(args):
     dataset_name = os.path.basename(os.path.normpath(args.data_path))
 
     embeddings = gel_all_embeddings(
-        identity_map, backbone, dataset_name, args.data_path,
+        identity_map, backbone, dataset_name, args.data_path, args.device
     )
 
     pos_similarities, pos_labels = collect_scores_from_embeddings(positive_pairs, embeddings, is_positive=True)
@@ -232,6 +231,37 @@ def main(args):
     print(f"   - None 임베딩 수: {sum(1 for v in embeddings.values() if v is None)}")
     print(f"   - 양성 쌍 유사도 수: {len(pos_similarities)}")
     print(f"   - 음성 쌍 유사도 수: {len(neg_similarities)}")
+
+    print(f"\n--- 유사도 분포 분석 ---")
+    if pos_similarities and neg_similarities:
+        print(f"🔵 동일 인물 쌍 유사도:")
+        print(f"   - 최소값: {min(pos_similarities):.4f}")
+        print(f"   - 최대값: {max(pos_similarities):.4f}")
+        print(f"   - 평균값: {np.mean(pos_similarities):.4f}")
+        print(f"   - 표준편차: {np.std(pos_similarities):.4f}")
+        
+        print(f"🔴 다른 인물 쌍 유사도:")
+        print(f"   - 최소값: {min(neg_similarities):.4f}")
+        print(f"   - 최대값: {max(neg_similarities):.4f}")
+        print(f"   - 평균값: {np.mean(neg_similarities):.4f}")
+        print(f"   - 표준편차: {np.std(neg_similarities):.4f}")
+
+    # 유사도 분포 분석을 로그 파일에도 저장
+    with open(LOG_FILE, 'a') as log_file:
+        log_file.write(f"\n--- 유사도 분포 분석 ---\n")
+        log_file.write(f"🔵 동일 인물 쌍 유사도:\n")
+        log_file.write(f"   - 최소값: {min(pos_similarities):.4f}\n")
+        log_file.write(f"   - 최대값: {max(pos_similarities):.4f}\n")
+        log_file.write(f"   - 평균값: {np.mean(pos_similarities):.4f}\n")
+        log_file.write(f"   - 표준편차: {np.std(pos_similarities):.4f}\n")
+        
+        log_file.write(f"🔴 다른 인물 쌍 유사도:\n")
+        log_file.write(f"   - 최소값: {min(neg_similarities):.4f}\n")
+        log_file.write(f"   - 최대값: {max(neg_similarities):.4f}\n")
+        log_file.write(f"   - 평균값: {np.mean(neg_similarities):.4f}\n")
+        log_file.write(f"   - 표준편차: {np.std(neg_similarities):.4f}\n")
+
+
     
     scores = np.array(pos_similarities + neg_similarities)
     labels = np.array(pos_labels + neg_labels)
@@ -286,10 +316,11 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Single-Process InsightFace Evaluation Script")
-    parser.add_argument('--model',type=str,choices=['ms1m-resnet100','irsnet50','best','best_no_resize','adaface'] , default='irsnet50')
-    parser.add_argument("--data_path", type=str, default="/home/ubuntu/arcface-pytorch/insight_face_package_model/pair/aligned_faces", help="평가할 데이터셋의 루트 폴더")
+    parser.add_argument('--model',type=str,choices=['ms1m-resnet100','irsnet50','best'] , default='ms1m-resnet100')
+    parser.add_argument("--data_path", type=str, default="/home/ubuntu/KOR_DATA/kor_data_sorting", help="평가할 데이터셋의 루트 폴더")
     parser.add_argument("--excel_path", type=str, default="insightface_evaluation_results.xlsx", help="결과를 저장할 Excel 파일 이름")
     parser.add_argument("--target_fars", nargs='+', type=float, default=[0.01, 0.001, 0.0001], help="TAR을 계산할 FAR 목표값들")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="사용할 장치 (예: cpu, cuda, cuda:0)")
     args = parser.parse_args()
 
     try:
