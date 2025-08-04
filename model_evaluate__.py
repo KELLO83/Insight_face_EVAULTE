@@ -144,6 +144,8 @@ def collect_scores_from_embeddings(pairs, embeddings, is_positive):
     return similarities, labels
 def main(args):
     LOG_FILE = os.path.join(script_dir , f'{args.model}_LOG.log')
+    np.random.seed(42)
+    random.seed(42)
     logging.basicConfig(
         filename=LOG_FILE, level=logging.WARNING,
         format='%(asctime)s - %(levelname)s - %(message)s', filemode='w'
@@ -207,6 +209,10 @@ def main(args):
             input_size=(112,112,3),
             num_layers=50
         )
+
+    
+    backbone = torch.compile(backbone)
+    logging.info("모델 컴파일....")
 
     load_result = backbone.load_state_dict(torch.load(Weight_path, map_location='cpu'), strict=False)
     print("누락된 가중치 : {}".format(load_result.missing_keys))
