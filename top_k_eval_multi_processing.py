@@ -8,17 +8,13 @@ import cv2
 from tqdm import tqdm
 from sklearn.metrics import roc_curve, auc, confusion_matrix
 import logging
-import traceback
-import pickle
 import argparse
 import matplotlib.pyplot as plt
 import logging
-from torchvision import transforms as V2
-from PIL import Image
+import torchvision.transforms.v2 as v2
 import numpy as np
-
-from backbone.ir_ASIS_Resnet import Backbone
-from backbone.irsnet import IResNet , IBasicBlock
+from backbones.iresnet import IResNet , IBasicBlock
+from multiprocessing.pool import Pool
 
 try:
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,57 +22,94 @@ except NameError:
     script_dir = os.getcwd()
 
 
-
-transforms = V2.Compose([
-        V2.ToTensor(),
-        V2.CenterCrop(size=(112, 112)),
-        V2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-    ])
-
+transforms_v2 = v2.Compose([
+    v2.ToDtype(torch.float32, scale=True),
+    v2.CenterCrop(size=(112, 112)),
+    v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+])
 
 @torch.inference_mode()
-def gel_all_embeddings(identity_map, backbone, dataset_name, data_path, device):
+def get_all_embeddings(identity_map, backbone, device, batch_size=128):
+
+    logging.info(f"임베딩 추출 배치사이즈 : {batch_size}")
+
+    if isinstance(device, str):
+        device = torch.device(device)
+    
     backbone = backbone.to(device)
     backbone.eval()
-    embeddings = {}
-    all_images = sorted(list(set(itertools.chain.from_iterable(identity_map.values()))))
-    backbone.eval()
-
+    embeddings = {} # {이미지경로 : 이미지벡터}
+    all_images = sorted(list(set(itertools.chain.from_iterable(identity_map.values())))) #모든이미지경로 평탄화
+     
     def preprocess_image(image):
-        image = Image.fromarray(image)
-        transformed_image = transforms(image)
+        transformed_image = transforms_v2(image)
         return transformed_image
-    
-    for img_path in tqdm(all_images, desc='임베딩 추출'):
-        try:
-            image = cv2.imread(img_path)
-            if image.shape[0] >112 or image.shape[1] > 112:
-                image = cv2.resize(image , interpolation=cv2.INTER_CUBIC , size=(112, 112))
-            elif image.shape[0] < 112 or image.shape[1] < 112:
-                image = cv2.resize(image , interpolation=cv2.INTER_AREA , size=(112, 112))
-            
-            if image is None:
-                embeddings[img_path] = None
-                logging.warning(f"{img_path} 경로 이미지가 비었습니다")
-                continue
-            
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            processed_image = preprocess_image(image_rgb)
-            
-            processed_image = processed_image.unsqueeze(0).to(device)
-            
 
-            vector = backbone(processed_image)
-            
-            if vector is None or vector.numel() == 0:
-                logging.warning(f"벡터 추출 실패 경로 : {img_path}")
-                embeddings[img_path] = None
-            else:
-                embeddings[img_path] = vector.cpu().numpy().flatten()
+    for i in tqdm(range(0, len(all_images), batch_size), desc='임베딩 추출'):
+        batch_paths = all_images[i:i+batch_size] # 배치단위로 경로 추출
+        batch_images = []
+        valid_paths = []
+
+        for img_path in batch_paths: # 배치단위로 하나씩 -> tensor값으로 변환
+            try:
+                image = cv2.imread(img_path)
+                if image is None:
+                    logging.warning(f"{img_path} 경로 이미지가 비었습니다")
+                    embeddings[img_path] = None
+                    continue
+
+                if image.shape[0] != 112 or image.shape[1] != 112:
+                    image = cv2.resize(image, (112, 112), interpolation=cv2.INTER_CUBIC if image.shape[0] > 112 else cv2.INTER_AREA)
                 
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                processed_image = preprocess_image(image_rgb)
+                batch_images.append(processed_image)
+                valid_paths.append(img_path)
+
+            except Exception as e:
+                logging.warning(f"이미지 처리 실패 경로 : {img_path} 오류 : {e}")
+                embeddings[img_path] = None
+        
+        if not batch_images:
+            continue
+
+        batch_tensor = torch.stack(batch_images).to(device) # 배치단위로 하나로만들어
+
+        try:
+            with torch.amp.autocast(device_type=device.type, dtype=torch.float16):
+                
+                output = backbone(batch_images)
+                if isinstance(output , tuple):
+                    _ , vectors  = output
+
+                else:
+                    vectors = output
+        
+
+            if vectors is None or vectors.numel() == 0:
+                logging.warning(f"벡터 추출 실패 (배치 크기: {len(batch_paths)})")
+                for path in valid_paths:
+                    embeddings[path] = None
+
+            else:
+                vectors_cpu = vectors.cpu().numpy()
+                for path, vector in zip(valid_paths, vectors_cpu):
+                    embeddings[path] = vector.flatten()
+
         except Exception as e:
-            logging.warning(f"임베딩 추출 실패 경로 : {img_path} 오류 : {e}")
-            embeddings[img_path] = None
+            logging.warning(f"임베딩 추출 실패 (배치 크기: {len(batch_paths)}) 오류 : {e}")
+            for path in valid_paths:
+                embeddings[path] = None
+    try:
+        sp = args.data_path
+        sp = sp.split('/')[-1]
+        file_name = '{args.model}_{sp}.npz'
+        np.savez_compressed(f'{file_name}' , **embeddings)
+        logging.info(f"임베딩 캐시 저장완료 파일이름 : {file_name}")
+
+    except Exception as e:
+        logging.info(f'{e}')
+        logging.info("@@임베딩 캐시 저장 실패 코드검수.....!!@@")
 
     return embeddings
     
@@ -136,35 +169,49 @@ def plot_roc_curve(fpr, tpr, roc_auc, model_name, excel_path):
     print(f"ROC 커브 그래프가 '{plot_filename}' 파일로 저장되었습니다.")
 
 
-def collect_scores_from_embeddings(pairs, embeddings, is_positive):
-    """임베딩으로 유사도를 계산합니다 (코사인 유사도 사용)."""
+def init_worker(worker_embeddings):
+    """워커 프로세스 초기화 함수. embeddings 딕셔너리를 전역 변수로 설정합니다."""
+    global embeddings
+    embeddings = worker_embeddings
+
+
+def collect_scores_from_embeddings(pairs, is_positive, total_pairs=None):
+    """임베딩으로 유사도를 계산합니다 (코사인 유사도 사용). 워커 프로세스에서 실행됩니다."""
+    global embeddings  # 워커의 전역 변수인 embeddings에 접근합니다.
     similarities, labels = [], []
     label = 1 if is_positive else 0
     desc = "동일 인물 쌍 계산" if is_positive else "다른 인물 쌍 계산"
-    for img1_path, img2_path in tqdm(pairs, desc=desc):
+
+    if total_pairs is None:
+        try:
+            total_pairs = len(pairs)
+        except TypeError:
+            total_pairs = None
+
+    for img1_path, img2_path in tqdm(pairs, desc=desc, total=total_pairs):
         emb1, emb2 = embeddings.get(img1_path), embeddings.get(img2_path)
         if emb1 is not None and emb2 is not None:
-        
+
             norm1 = np.linalg.norm(emb1)
             norm2 = np.linalg.norm(emb2)
-            
+
             if norm1 == 0 or norm2 == 0:
                 logging.warning(f"Zero norm embedding found: {img1_path} or {img2_path}")
                 continue
-            
+
             emb1_norm = emb1 / norm1
             emb2_norm = emb2 / norm2
             cosine_similarity = np.dot(emb1_norm, emb2_norm)
-            
+
             if np.isfinite(cosine_similarity):
                 similarities.append(cosine_similarity)
                 labels.append(label)
             else:
                 logging.warning(f"Invalid similarity computed: {cosine_similarity}")
-    
+
     return similarities, labels
 
-def calculate_identification_metrics(identity_map, embeddings, device):
+def calculate_identification_metrics(identity_map, embeddings ):
     logging.info("Calculating identification metrics (Rank-k, CMC)...")
 
     gallery_images = {} # {identity: image_path}
@@ -177,11 +224,16 @@ def calculate_identification_metrics(identity_map, embeddings, device):
             continue
         
         # Use the first image as gallery representative
-        gallery_images[identity] = img_paths[0]
-        
+        try:
+            gallery_images[identity] = img_paths[2098] ############################### 2098번사진으로
+        except:
+            logging.info("대표이미지 0으로 설정함 top k 부정확")
+            gallery_images[identity] = img_paths[0]
+
         # Remaining images are probes for this identity
         for i in range(1, len(img_paths)):
-            probe_images_with_labels.append((img_paths[i], identity))
+            probe_images_with_labels.append((img_paths[i], identity))  # 이미지와 해당사람 클래스
+    
     
     if not probe_images_with_labels:
         logging.warning("No probe images available for identification evaluation. Skipping identification metrics.")
@@ -195,7 +247,7 @@ def calculate_identification_metrics(identity_map, embeddings, device):
     gallery_identities_ordered = [] # ordered list of identities corresponding to gallery_embeddings
     for identity in sorted(gallery_images.keys()): # Sort to ensure consistent order
         img_path = gallery_images[identity]
-        emb = embeddings.get(img_path)
+        emb = embeddings.get(img_path) # 대표이미지 임베딩값 추출
         if emb is not None:
             gallery_embeddings.append(emb / np.linalg.norm(emb)) # Normalize
             gallery_identities_ordered.append(identity)
@@ -221,7 +273,7 @@ def calculate_identification_metrics(identity_map, embeddings, device):
     rank_5_correct = 0
     
     for probe_img_path, true_identity in tqdm(probe_images_with_labels, desc="Evaluating identification"):
-        probe_emb = embeddings.get(probe_img_path)
+        probe_emb = embeddings.get(probe_img_path) # 추측 임베딩 추출
         if probe_emb is None:
             logging.warning(f"Probe image embedding missing: {probe_img_path}. Skipping.")
             continue
@@ -229,7 +281,7 @@ def calculate_identification_metrics(identity_map, embeddings, device):
         probe_emb_norm = probe_emb / np.linalg.norm(probe_emb)
 
         # Calculate similarities with all gallery embeddings
-        similarities = np.dot(gallery_embeddings_np, probe_emb_norm)
+        similarities = np.dot(gallery_embeddings_np, probe_emb_norm)# (class , 512 )  dot (512 ,)= (class, 1) -> 에측이미지에대하여 대표이미지 전부 유사한정도 구하기 
         
         # Get ranks (indices of sorted similarities in descending order)
         # argsort returns indices that would sort an array in ascending order.
@@ -273,6 +325,7 @@ def calculate_identification_metrics(identity_map, embeddings, device):
 
 def main(args):
     LOG_FILE = os.path.join(script_dir , f'{args.model}_LOG.log')
+    torch.backends.cudnn.benchmark = True
     np.random.seed(42)
     random.seed(42)
     logging.basicConfig(
@@ -282,22 +335,22 @@ def main(args):
     
     if not os.path.isdir(args.data_path):
         raise FileNotFoundError(f"데이터셋 경로를 찾을 수 없습니다: {args.data_path}")
-    
-    if args.model =='ms1m-resnet100':
-        Weight_path = 'models/ms1mv3_arcface_r100_fp16.pth'
-        backbone = IResNet(IBasicBlock , [3,13,30,3])
 
-    
-    elif args.model =='irsnet50':
-        Weight_path = 'models/backbone_ir50_asia.pth'
-        backbone = Backbone(
-            input_size=(112,112,3),
-            num_layers=50,
-        )
+    if args.model =='Glint360K_R200_TopoFR':
+        Weight_path = 'Glint360K_R200_TopoFR_9784.pt'
+        backbone = IResNet(IBasicBlock, [6, 26, 60, 6] , num_classes=360232)
+
+    elif args.model == 'MS1MV2_R200_TopoFR':
+        Weight_path = 'MS1MV2_R200_TopoFR_9712_cosface.pt'
+        backbone = IResNet(IBasicBlock, [6, 26, 60, 6] , num_classes=85742)
+
+    elif args.model == 'Glint360K_R100_TopoFR_9760':
+        Weight_path = 'Glint360K_R100_TopoFR_9760.pt'
+        backbone = IResNet(IBasicBlock, [3, 13, 30, 3] , num_classes=360232)
+        
     else:
         logging.info(f"Select Model {args.model}")
         exit(0)
-
 
 
     load_result = backbone.load_state_dict(torch.load(Weight_path, map_location='cpu'), strict=False)
@@ -314,11 +367,11 @@ def main(args):
 
     backbone = torch.compile(backbone)
 
-    identity_map = {}
+    identity_map = {} # 사람폴더라벨 : 해당 폴더 사람 이미지 경로
     for person_folder in os.listdir(args.data_path):
-        person_path = os.path.join(args.data_path, person_folder)
+        person_path = os.path.join(args.data_path, person_folder) # 각 사람폴더의 경로
         if os.path.isdir(person_path):
-            images = [os.path.join(person_path, f) for f in os.listdir(person_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            images = [os.path.join(person_path, f) for f in os.listdir(person_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))] # 각사람폴더에 들어있는 모든 jpg
             if len(images) > 1:
                 identity_map[person_folder] = images
     
@@ -327,37 +380,100 @@ def main(args):
     print(f"총 {len(identity_map)}명의 인물, {sum(len(v) for v in identity_map.values())}개의 이미지를 찾았습니다.")
 
     print("\n평가에 사용할 동일 인물/다른 인물 쌍을 생성합니다...")
+
+    # 메모리 문제를 해결하기 위해 쌍을 리스트에 저장하는 대신 제너레이터를 사용합니다.
+    # 1. 동일 인물 쌍 처리
+    num_positive_pairs = sum(len(imgs) * (len(imgs) - 1) // 2 for imgs in identity_map.values())
+    positive_pairs_generator = itertools.chain.from_iterable(
+        itertools.combinations(imgs, 2) for imgs in identity_map.values()
+    )
+
+    # 2. 다른 인물 쌍 처리
+    num_negative_pairs = num_positive_pairs
     
-    positive_pairs = []
-    for imgs in tqdm(identity_map.values(), desc="동일 인물 쌍 생성"):
-        positive_pairs.extend(itertools.combinations(imgs, 2))
+    def negative_pairs_generator_func(identity_map, num_pairs_to_generate):
+        identities = list(identity_map.keys())
+        if len(identities) < 2:
+            return
 
-    num_positive_pairs = len(positive_pairs)
-
-    identities = list(identity_map.keys())
-    negative_pairs_set = set()
-    if len(identities) > 1:
-        with tqdm(total=num_positive_pairs, desc="다른 인물 쌍 생성") as pbar:
-            while len(negative_pairs_set) < num_positive_pairs:
+        seen_pairs = set()
+        
+        for _ in range(num_pairs_to_generate):
+            while True:
                 id1, id2 = random.sample(identities, 2)
-                pair = (random.choice(identity_map[id1]), random.choice(identity_map[id2]))
-                sorted_pair = tuple(sorted(pair))
-                if sorted_pair not in negative_pairs_set:
-                    negative_pairs_set.add(sorted_pair)
-                    pbar.update(1)
-    negative_pairs = list(negative_pairs_set)
+                img1_path = random.choice(identity_map[id1])
+                img2_path = random.choice(identity_map[id2])
 
-    print(f"- 동일 인물 쌍: {len(positive_pairs)}개, 다른 인물 쌍: {len(negative_pairs)}개")
+                sorted_pair = tuple(sorted((img1_path, img2_path)))
+                
+                if sorted_pair not in seen_pairs:
+                    seen_pairs.add(sorted_pair)
+
+                    if len(seen_pairs) > 2000000: # 메모리 상황에 따라 조절 가능
+                        seen_pairs.clear()
+                    yield (img1_path, img2_path)
+                    break
+
+    negative_pairs_generator = negative_pairs_generator_func(identity_map, num_negative_pairs)
+    
+    print(f"- 동일 인물 쌍: {num_positive_pairs}개, 다른 인물 쌍: {num_negative_pairs}개 (생성 예정)")
 
 
     dataset_name = os.path.basename(os.path.normpath(args.data_path))
 
-    embeddings = gel_all_embeddings(
-        identity_map, backbone, dataset_name, args.data_path, args.device
+    embeddings = get_all_embeddings(
+        identity_map, backbone, dataset_name, args.data_path, args.device, args.batch_size
     )
 
-    pos_similarities, pos_labels = collect_scores_from_embeddings(positive_pairs, embeddings, is_positive=True)
-    neg_similarities, neg_labels = collect_scores_from_embeddings(negative_pairs, embeddings, is_positive=False)
+
+        # 작업을 더 작은 청크로 나누어 메모리 사용량을 관리하는 헬퍼 함수입니다.
+    def chunk_iterable(iterable, chunk_size):
+        it = iter(iterable)
+        while True:
+            # 제너레이터에서 chunk_size만큼의 아이템을 가져와 리스트로 만듭니다.
+            chunk = list(itertools.islice(it, chunk_size))
+            if not chunk:
+                # 제너레이터가 비었으면 루프를 종료합니다.
+                break
+            yield chunk
+
+    # 각 워커에게 한 번에 보낼 쌍의 수입니다. 시스템의 메모리와 CPU 코어 수에 따라 조절할 수 있습니다.
+    CHUNK_SIZE = 200000  
+    
+    pos_similarities, pos_labels = [], []
+    neg_similarities, neg_labels = [], []
+
+    # Pool을 생성하고, init_worker 함수를 initializer로 설정합니다.
+    # initargs에는 init_worker에 전달할 인자(embeddings 딕셔너리)를 튜플로 제공합니다.
+    with Pool(initializer=init_worker, initargs=(embeddings,)) as pool:
+        # 1. 동일 인물 쌍 처리
+        print("동일 인물 쌍 처리 중...")
+        # positive_pairs_generator를 청크 단위로 나눕니다.
+        positive_chunks = chunk_iterable(positive_pairs_generator, CHUNK_SIZE)
+        
+        # starmap을 사용하여 각 청크와 is_positive=True 인자를 워커의 collect_scores_from_embeddings 함수에 전달합니다.
+        pos_results = pool.starmap(
+            collect_scores_from_embeddings,
+            [(chunk, True) for chunk in positive_chunks]
+        )
+        
+        # 모든 워커로부터 반환된 결과를 취합합니다.
+        for sims, labs in pos_results:
+            pos_similarities.extend(sims)
+            pos_labels.extend(labs)
+
+        # 2. 다른 인물 쌍 처리
+        print("다른 인물 쌍 처리 중...")
+        negative_chunks = chunk_iterable(negative_pairs_generator, CHUNK_SIZE)
+        neg_results = pool.starmap(
+            collect_scores_from_embeddings,
+            [(chunk, False) for chunk in negative_chunks]
+        )
+        
+        # 결과 취합
+        for sims, labs in neg_results:
+            neg_similarities.extend(sims)
+            neg_labels.extend(labs)
 
 
     print(f"🔍 디버깅 정보:")
@@ -484,7 +600,7 @@ def main(args):
         total_class = len(identity_map)
         
         # Calculate identification metrics
-        rank_1_accuracy, rank_5_accuracy, cmc_curve, max_rank, total_probes = calculate_identification_metrics(identity_map, embeddings, args.device)
+        rank_1_accuracy, rank_5_accuracy, cmc_curve, max_rank, total_probes = calculate_identification_metrics(identity_map, embeddings)
 
         if rank_1_accuracy is not None:
             print(f"\n--- 얼굴 식별 성능 ---")
@@ -534,12 +650,14 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SEvaluation Script")
-    parser.add_argument('--model',type=str , default='irsnet50')
-    parser.add_argument("--data_path", type=str, default="/home/ubuntu/KOR_DATA/kor_data_sorting", help="평가할 데이터셋의 루트 폴더")
+    parser.add_argument('--model',type=str , default='Glint360K_R100_TopoFR_9760', choices=['Glint360K_R200_TopoFR', 'MS1MV2_R200_TopoFR', 'Glint360K_R100_TopoFR_9760'],)
+    parser.add_argument("--data_path", type=str, default="/home/ubuntu/KOR_DATA/kor_data_full_Middle_aligend", help="평가할 데이터셋의 루트 폴더")
     parser.add_argument("--excel_path", type=str, default="evaluation_results.xlsx", help="결과를 저장할 Excel 파일 이름")
     parser.add_argument("--target_fars", nargs='+', type=float, default=[0.01, 0.001, 0.0001], help="TAR을 계산할 FAR 목표값들")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="사용할 장치 (예: cpu, cuda, cuda:0)")
+    parser.add_argument("--batch_size", type=int, default=256, help="임베딩 추출 시 배치 크기")
     args = parser.parse_args()
+    #args.data_path = '/home/ubuntu/arcface-pytorch/insight_face_package_model/split_pair/aligned'
 
     for key , values in args.__dict__.items():
         print(f"key {key}  :  {values}")

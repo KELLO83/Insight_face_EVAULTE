@@ -5,6 +5,7 @@ from torch.utils.checkpoint import checkpoint
 
 """
 Insight face backbone 전용
+https://github.com/deepinsight/insightface/tree/master/model_zoo
 """
 __all__ = ['iresnet18', 'iresnet34', 'iresnet50', 'iresnet100', 'iresnet200']
 using_ckpt = False
